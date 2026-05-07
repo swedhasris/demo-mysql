@@ -10,7 +10,7 @@ export function BrandingSettings() {
   const navigate = useNavigate();
   const { profile } = useAuth();
   const { branding, updateCompanyName, updateLogo, loading } = useBranding();
-  
+
   const [companyName, setCompanyName] = useState(branding.companyName);
   const [previewLogo, setPreviewLogo] = useState<string | null>(branding.logoBase64);
   const [isSaving, setIsSaving] = useState(false);
@@ -107,8 +107,8 @@ export function BrandingSettings() {
             </p>
           </div>
         </div>
-        <Button 
-          onClick={handleSave} 
+        <Button
+          onClick={handleSave}
           disabled={isSaving || loading}
           className="bg-sn-green text-sn-dark hover:bg-sn-green/90"
         >
@@ -161,9 +161,9 @@ export function BrandingSettings() {
             <div className="flex items-center gap-4">
               <div className="w-20 h-20 bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden border border-border">
                 {previewLogo ? (
-                  <img 
-                    src={previewLogo} 
-                    alt="Logo Preview" 
+                  <img
+                    src={previewLogo}
+                    alt="Logo Preview"
                     className="w-full h-full object-cover"
                   />
                 ) : (
@@ -220,9 +220,9 @@ export function BrandingSettings() {
         <h2 className="text-lg font-semibold mb-4">Live Preview</h2>
         <div className="bg-sn-sidebar text-white p-4 rounded-lg inline-flex items-center gap-3">
           {previewLogo ? (
-            <img 
-              src={previewLogo} 
-              alt="Logo" 
+            <img
+              src={previewLogo}
+              alt="Logo"
               className="w-8 h-8 rounded object-cover"
             />
           ) : (

@@ -11,6 +11,7 @@ export function Reports() {
   const [data, setData] = useState<any[]>([]);
   const [categoryData, setCategoryData] = useState<any[]>([]);
   const [slaData, setSlaData] = useState<any[]>([]);
+  const [resolutionData, setResolutionData] = useState<any[]>([]);
 
   useEffect(() => {
     if (!user || !profile) return;
@@ -37,6 +38,16 @@ export function Reports() {
         catCounts[t.category] = (catCounts[t.category] || 0) + 1;
       });
       setCategoryData(Object.keys(catCounts).map(cat => ({ name: cat, value: catCounts[cat] })));
+
+      // Resolution Code Distribution
+      const resCounts: any = {};
+      tickets.forEach((t: any) => {
+        if (t.status === "Resolved" || t.status === "Closed") {
+          const code = t.resolutionCode || "Uncoded";
+          resCounts[code] = (resCounts[code] || 0) + 1;
+        }
+      });
+      setResolutionData(Object.keys(resCounts).map(code => ({ name: code, count: resCounts[code] })));
 
       // SLA Compliance
       const slaCounts = { "Within SLA": 0, "At Risk": 0, "Breached": 0 };
@@ -173,6 +184,24 @@ export function Reports() {
                 <span className="text-xs font-medium">{entry.name}</span>
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* Resolution Codes Chart */}
+        <div className="sn-card">
+          <h3 className="text-lg font-bold mb-6">Tickets by Resolution Code</h3>
+          <div className="h-80 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={resolutionData.length > 0 ? resolutionData : [{ name: 'No Resolved Tickets', count: 0 }]}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="name" fontSize={9} interval={0} angle={-45} textAnchor="end" height={80} />
+                <YAxis fontSize={12} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: "#fff", borderRadius: "8px", border: "1px solid #e2e8f0", fontSize: "11px" }}
+                />
+                <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
           </div>
         </div>
         <div className="sn-card lg:col-span-2">

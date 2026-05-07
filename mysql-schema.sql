@@ -125,6 +125,25 @@ CREATE TABLE IF NOT EXISTS comments (
 ) ENGINE=InnoDB;
 
 -- ============================================================
+-- TICKET ACTIVITIES TABLE (Unified Timeline)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ticket_activities (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_id INT NOT NULL,
+    activity_type VARCHAR(50) NOT NULL,            -- e.g., 'work_note', 'comment', 'email', 'status_change', 'system'
+    visibility_type VARCHAR(50) NOT NULL,          -- e.g., 'internal', 'public'
+    created_by VARCHAR(128),
+    created_by_name VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    message TEXT NOT NULL,
+    metadata_json JSON,
+    FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+    INDEX idx_ticket_id (ticket_id),
+    INDEX idx_created_at (created_at),
+    INDEX idx_visibility (visibility_type)
+) ENGINE=InnoDB;
+
+-- ============================================================
 -- APPROVALS TABLE (Replaces Firestore approvals collection)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS approvals (

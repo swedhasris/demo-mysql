@@ -5,12 +5,13 @@ import { db, handleFirestoreError, OperationType } from "../lib/firebase";
 import { useAuth } from "../contexts/AuthContext";
 import { ROLE_HIERARCHY, Role } from "../lib/roles";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, Send, History, MessageSquare, Save, Trash2, CheckCircle2, Clock, Plus, Star, Play, Square, Eye } from "lucide-react";
+import { ChevronLeft, Send, History, MessageSquare, Save, Trash2, CheckCircle2, Clock, Plus, Star, Play, Square, Eye, AlertCircle, Lock, Globe, Users, Search, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SLATimer } from "../components/SLATimer";
 import { useServiceCatalog } from "../lib/serviceCatalog";
 import confetti from "canvas-confetti";
 import { captureScreenshot, analyzeWorkContext, saveWorkSession, type WorkAnalysis } from "../lib/workSessionAI";
+import { ActivityTimeline } from "../components/ActivityTimeline";
 
 export function TicketDetail() {
   const { id } = useParams();
@@ -41,6 +42,11 @@ export function TicketDetail() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [aiStatusMessage, setAiStatusMessage] = useState("");
 
+  const [timelineRefresh, setTimelineRefresh] = useState(0);
+  const [isPosting, setIsPosting] = useState(false);
+  const [postMessage, setPostMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+
+
   const visibleCategories = categories.filter((item) => item.status === 'active');
   const visibleSubcategories = subcategories.filter(s => s.categoryId === editedTicket?.categoryId && s.status === 'active');
   const visibleProviders = serviceProviders.filter(p => p.subcategoryId === editedTicket?.subcategoryId && p.status === 'active');
@@ -48,9 +54,21 @@ export function TicketDetail() {
 
   useEffect(() => {
     getDocs(collection(db, "users")).then(snap => {
-      setAgents(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter((u: any) => ROLE_HIERARCHY[u.role as Role] >= ROLE_HIERARCHY["agent"]));
-    }).catch(() => { });
+      const usersList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setAgents(usersList.filter((u: any) => ROLE_HIERARCHY[u.role as Role] >= ROLE_HIERARCHY["agent"]));
+    }).catch(() => {
+      // Fallback: load agents from MySQL API
+      fetch('/api/users').then(r => r.json()).then((usersList: any[]) => {
+        setAgents(usersList.filter((u: any) => ['agent', 'admin', 'sub_admin', 'super_admin', 'ultra_super_admin'].includes(u.role)));
+      }).catch(() => { });
+    });
   }, []);
+
+  // DYNAMIC GROUP FILTERING: Only show users belonging to the selected group
+  const selectedGroupObj = groups.find(g => g.name === editedTicket?.assignmentGroup);
+  const filteredAgents = agents.filter(a =>
+    selectedGroupObj?.memberIds?.includes(a.id) || selectedGroupObj?.memberIds?.includes(a.uid)
+  );
 
   // Load active timer state from Firestore on mount
   useEffect(() => {
@@ -136,14 +154,24 @@ export function TicketDetail() {
 
     try {
       const historyEntries: any[] = [];
-      const fields = ["category", "categoryId", "subcategory", "subcategoryId", "service", "serviceId", "serviceProvider", "status", "impact", "urgency", "assignmentGroup", "title", "description", "assignedTo", "affectedUser", "resolutionCode", "resolutionNotes"];
+      const fields = ["category", "categoryId", "subcategory", "subcategoryId", "service", "serviceId", "serviceProvider", "status", "impact", "urgency", "assignmentGroup", "title", "description", "assignedTo", "affectedUser", "resolutionCode", "resolutionNotes", "resolutionMethod", "closureReason", "watchList", "workNotesList"];
+
+      const fieldChanges: any[] = [];
 
       fields.forEach(field => {
-        if (editedTicket[field] !== ticket[field]) {
-          historyEntries.push({
+        if (editedTicket[field] !== (ticket[field] || "")) {
+          const entry = {
             action: `Field ${field} updated from ${ticket[field] || "none"} to ${editedTicket[field] || "none"}`,
             timestamp: new Date().toISOString(),
             user: profile?.name || user.email
+          };
+          historyEntries.push(entry);
+
+          // Capture for activities API
+          fieldChanges.push({
+            fieldName: field,
+            oldValue: ticket[field] || "none",
+            newValue: editedTicket[field] || "none"
           });
         }
       });
@@ -152,9 +180,11 @@ export function TicketDetail() {
       // The 'Submit' button should always save editedTicket.
 
       const { id: _, ...payload } = editedTicket;
-      
-      const assignedUserName = editedTicket.assignedTo 
-        ? agents.find(a => a.id === editedTicket.assignedTo)?.name || editedTicket.assignedToName || "" 
+
+      const assignedUserName = editedTicket.assignedTo
+        ? agents.find(a => a.id === editedTicket.assignedTo)?.name
+        || agents.find(a => a.id === editedTicket.assignedTo)?.email
+        || editedTicket.assignedToName || ""
         : "";
 
       const updates: any = {
@@ -165,10 +195,10 @@ export function TicketDetail() {
       };
 
       const isResolved = editedTicket.status === "Resolved" || editedTicket.status === "Closed";
-      const isPaused = editedTicket.status === "On Hold" || editedTicket.status === "Waiting for Customer";
+      const isPaused = editedTicket.status === "On Hold" || editedTicket.status === "Waiting for Customer" || editedTicket.status === "Awaiting User" || editedTicket.status === "Awaiting Vendor";
 
       if (editedTicket.status !== ticket.status) {
-        
+
         // Stop Response SLA if the state is changed out of "New" (i.e. acknowledging the ticket)
         if (editedTicket.status !== "New" && !ticket.firstResponseAt) {
           updates.firstResponseAt = new Date().toISOString();
@@ -180,22 +210,29 @@ export function TicketDetail() {
           updates.resolvedBy = profile?.name || user.email;
           updates.resolutionSlaStatus = "Completed";
           updates.onHoldStart = null;
-          
+
           // Ensure resolution fields are present if being resolved
-          if (!editedTicket.resolutionCode || !editedTicket.resolutionNotes) {
-            alert("Please go to the 'Resolution Information' tab and enter both a Resolution Code and Resolution Notes before resolving.");
+          if (!editedTicket.resolutionCode || !editedTicket.resolutionNotes || !editedTicket.resolutionMethod) {
+            alert("Please provide Resolution Code, Resolution Method, and Resolution Notes before resolving.");
             setIsUpdating(false);
             return;
           }
+
+          // Calculate resolution duration
+          const createdAtMs = ticket.createdAt?.seconds ? ticket.createdAt.seconds * 1000 : (typeof ticket.createdAt === 'string' ? new Date(ticket.createdAt).getTime() : Date.now());
+          const resolvedAtMs = Date.now();
+          const durationMs = resolvedAtMs - createdAtMs;
+          updates.resolutionDuration = Math.max(0, durationMs);
         } else if (!isResolved && ticket.resolvedAt) {
           updates.resolvedAt = null;
           updates.resolvedBy = null;
+          updates.resolutionDuration = null;
           updates.resolutionSlaStatus = "In Progress";
         }
 
         if (isPaused && !isResolved) {
           updates.onHoldStart = new Date().toISOString();
-        } else if ((ticket.status === "On Hold" || ticket.status === "Waiting for Customer") && !isPaused) {
+        } else if ((ticket.status === "On Hold" || ticket.status === "Waiting for Customer" || ticket.status === "Awaiting User" || ticket.status === "Awaiting Vendor") && !isPaused) {
           const onHoldStartStr = ticket.onHoldStart || new Date().toISOString();
           const onHoldStart = new Date(onHoldStartStr).getTime();
           const now = new Date().getTime();
@@ -225,7 +262,7 @@ export function TicketDetail() {
         if (priorityStr.includes("1")) basePoints = 100;
         else if (priorityStr.includes("2")) basePoints = 50;
         else if (priorityStr.includes("3")) basePoints = 25;
-        
+
         pointsAwarded += basePoints;
 
         // 2. Response Bonus (if acknowledged on time)
@@ -238,7 +275,7 @@ export function TicketDetail() {
           const deadline = new Date(ticket.resolutionDeadline).getTime();
           const resolvedAtMs = new Date().getTime();
           const createdAtMs = ticket.createdAt?.seconds ? ticket.createdAt.seconds * 1000 : (typeof ticket.createdAt === 'string' ? new Date(ticket.createdAt).getTime() : 0);
-          
+
           if (createdAtMs > 0 && resolvedAtMs < deadline) {
             const totalSla = deadline - createdAtMs;
             const timeSaved = deadline - resolvedAtMs;
@@ -257,6 +294,61 @@ export function TicketDetail() {
       };
 
       await updateDoc(ticketRef, finalUpdates);
+
+      // Log status change and other field changes to activity timeline
+      if (fieldChanges.length > 0) {
+        try {
+          const isResolving = (editedTicket.status === "Resolved" || editedTicket.status === "Closed") && ticket.status !== "Resolved" && ticket.status !== "Closed";
+
+          // Log each field change individually for the timeline
+          for (const change of fieldChanges) {
+            await fetch(`/api/tickets/${id}/activities`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                activity_type: change.fieldName === 'status' ? (isResolving ? 'resolution' : 'status_change') : 'field_change',
+                visibility_type: 'public',
+                created_by: user.uid,
+                created_by_name: profile?.name || user.email,
+                message: change.fieldName === 'status' && isResolving
+                  ? `Ticket resolved with code: ${editedTicket.resolutionCode}. Method: ${editedTicket.resolutionMethod}`
+                  : `Changed ${change.fieldName.replace(/([A-Z])/g, ' $1').trim()} from "${change.oldValue}" to "${change.newValue}"`,
+                metadata_json: {
+                  fieldName: change.fieldName,
+                  oldValue: change.oldValue,
+                  newValue: change.newValue,
+                  resolutionCode: editedTicket.resolutionCode,
+                  resolutionMethod: editedTicket.resolutionMethod,
+                  closureReason: editedTicket.closureReason,
+                  resolutionNotes: editedTicket.resolutionNotes
+                }
+              })
+            });
+          }
+          setTimelineRefresh(prev => prev + 1);
+        } catch (e) { /* non-critical */ }
+      }
+
+      // Log assignment change to activity timeline
+      if (editedTicket.assignedTo !== ticket.assignedTo) {
+        try {
+          const newAgent = agents.find(a => a.id === editedTicket.assignedTo);
+          const oldAgent = agents.find(a => a.id === ticket.assignedTo);
+          await fetch(`/api/tickets/${id}/activities`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              activity_type: 'assignment_change',
+              visibility_type: 'internal',
+              created_by: user.uid,
+              created_by_name: profile?.name || user.email,
+              message: `Assignment changed from "${oldAgent?.name || ticket.assignedToName || 'Unassigned'}" to "${newAgent?.name || assignedUserName || 'Unassigned'}"`,
+              metadata_json: { oldAssignee: oldAgent?.name || ticket.assignedToName, newAssignee: newAgent?.name || assignedUserName }
+            })
+          });
+          setTimelineRefresh(prev => prev + 1);
+        } catch (e) { /* non-critical */ }
+      }
 
       if (pointsAwarded > 0) {
         confetti({
@@ -282,55 +374,81 @@ export function TicketDetail() {
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newComment.trim() || !id || !user) return;
+    setIsPosting(true);
     try {
-      const now = new Date().toISOString();
-      const historyEntry = { action: "Comment Added", timestamp: now, user: profile?.name || user.email };
-      const updates: any = {
-        updatedAt: serverTimestamp(),
-        history: [...(ticket.history || []), historyEntry]
-      };
-      if (!ticket.firstResponseAt) {
-        updates.firstResponseAt = now;
-        updates.responseSlaStatus = "Completed";
-      }
-      await addDoc(collection(db, "tickets", id, "comments"), {
-        userId: user.uid,
-        userName: profile?.name || user.email,
-        message: newComment,
-        type: "comment",
-        createdAt: serverTimestamp()
+      // Post to API-backed activity timeline (customer-visible comment)
+      const res = await fetch(`/api/tickets/${id}/activities`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activity_type: 'comment',
+          visibility_type: 'public',
+          created_by: user.uid,
+          created_by_name: profile?.name || user.email,
+          message: newComment.trim()
+        })
       });
-      await updateDoc(doc(db, "tickets", id), updates);
+      if (!res.ok) throw new Error('Failed to post comment');
+
+      // Update Firestore ticket metadata (SLA first response)
+      try {
+        const now = new Date().toISOString();
+        const updates: any = { updatedAt: serverTimestamp(), history: [...(ticket.history || []), { action: "Comment Added", timestamp: now, user: profile?.name || user.email }] };
+        if (!ticket.firstResponseAt) { updates.firstResponseAt = now; updates.responseSlaStatus = "Completed"; }
+        await updateDoc(doc(db, "tickets", id), updates);
+      } catch (e) { /* Firestore update non-critical */ }
+
       setNewComment("");
-    } catch (error) { console.error(error); }
+      setTimelineRefresh(prev => prev + 1);
+      setPostMessage({ text: 'Comment posted successfully', type: 'success' });
+      setTimeout(() => setPostMessage(null), 3000);
+    } catch (error: any) {
+      console.error(error);
+      setPostMessage({ text: 'Failed to post comment', type: 'error' });
+      setTimeout(() => setPostMessage(null), 4000);
+    } finally {
+      setIsPosting(false);
+    }
   };
 
   const handleAddWorkNote = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!workNote.trim() || !id || !user) return;
+    setIsPosting(true);
     try {
-      const historyEntry = { action: "Work Note Added", timestamp: new Date().toISOString(), user: profile?.name || user.email };
-      const now = new Date().toISOString();
-      const updates: any = {
-        updatedAt: serverTimestamp(),
-        history: [...(ticket.history || []), historyEntry]
-      };
-      
-      if (!ticket.firstResponseAt) {
-        updates.firstResponseAt = now;
-        updates.responseSlaStatus = "Completed";
-      }
-
-      await addDoc(collection(db, "tickets", id, "comments"), {
-        userId: user.uid,
-        userName: profile?.name || user.email,
-        message: workNote,
-        type: "work_note",
-        createdAt: serverTimestamp()
+      // Post to API-backed activity timeline (internal/private work note)
+      const res = await fetch(`/api/tickets/${id}/activities`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activity_type: 'work_note',
+          visibility_type: 'internal',
+          created_by: user.uid,
+          created_by_name: profile?.name || user.email,
+          message: workNote.trim()
+        })
       });
-      await updateDoc(doc(db, "tickets", id), updates);
+      if (!res.ok) throw new Error('Failed to post work note');
+
+      // Update Firestore ticket metadata
+      try {
+        const now = new Date().toISOString();
+        const updates: any = { updatedAt: serverTimestamp(), history: [...(ticket.history || []), { action: "Work Note Added", timestamp: now, user: profile?.name || user.email }] };
+        if (!ticket.firstResponseAt) { updates.firstResponseAt = now; updates.responseSlaStatus = "Completed"; }
+        await updateDoc(doc(db, "tickets", id), updates);
+      } catch (e) { /* Firestore update non-critical */ }
+
       setWorkNote("");
-    } catch (error) { console.error(error); }
+      setTimelineRefresh(prev => prev + 1);
+      setPostMessage({ text: 'Work note added successfully', type: 'success' });
+      setTimeout(() => setPostMessage(null), 3000);
+    } catch (error: any) {
+      console.error(error);
+      setPostMessage({ text: 'Failed to add work note', type: 'error' });
+      setTimeout(() => setPostMessage(null), 4000);
+    } finally {
+      setIsPosting(false);
+    }
   };
 
   const updateLocalField = (field: string, value: string) => {
@@ -408,7 +526,7 @@ export function TicketDetail() {
   const handleStopTimer = async () => {
     const stopTime = new Date();
     let finalElapsed = elapsedTime;
-    
+
     if (timerStartTime) {
       finalElapsed = Math.floor((stopTime.getTime() - timerStartTime.getTime()) / 1000);
       setElapsedTime(finalElapsed);
@@ -625,19 +743,21 @@ export function TicketDetail() {
         </div>
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-4 border-r border-border pr-6 hidden md:flex">
-            <SLATimer 
-              label="Resp SLA" 
-              deadline={ticket.responseDeadline} 
-              metAt={ticket.firstResponseAt || (editedTicket.status !== "New" ? new Date().toISOString() : undefined)} 
-              isPaused={editedTicket.status === "On Hold" || editedTicket.status === "Waiting for Customer"}
+            <SLATimer
+              label="Resp SLA"
+              deadline={ticket.responseDeadline}
+              startTime={ticket.responseSlaStartTime || ticket.createdAt}
+              metAt={ticket.firstResponseAt || (editedTicket.status !== "New" ? new Date().toISOString() : undefined)}
+              isPaused={editedTicket.status === "On Hold" || editedTicket.status === "Waiting for Customer" || editedTicket.status === "Awaiting User" || editedTicket.status === "Awaiting Vendor"}
               onHoldStart={ticket.onHoldStart}
               totalPausedTime={ticket.totalPausedTime}
             />
-            <SLATimer 
-              label="Res SLA" 
-              deadline={ticket.resolutionDeadline} 
-              metAt={ticket.resolvedAt || (editedTicket.status === "Resolved" || editedTicket.status === "Closed" ? new Date().toISOString() : undefined)} 
-              isPaused={editedTicket.status === "On Hold" || editedTicket.status === "Waiting for Customer"}
+            <SLATimer
+              label="Res SLA"
+              deadline={ticket.resolutionDeadline}
+              startTime={ticket.resolutionSlaStartTime || ticket.createdAt}
+              metAt={ticket.resolvedAt || (editedTicket.status === "Resolved" || editedTicket.status === "Closed" ? new Date().toISOString() : undefined)}
+              isPaused={editedTicket.status === "On Hold" || editedTicket.status === "Waiting for Customer" || editedTicket.status === "Awaiting User" || editedTicket.status === "Awaiting Vendor"}
               onHoldStart={ticket.onHoldStart}
               totalPausedTime={ticket.totalPausedTime}
               waitUntil={ticket.firstResponseAt || (editedTicket.status !== "New" ? new Date().toISOString() : null)}
@@ -780,7 +900,7 @@ export function TicketDetail() {
               <div className="grid grid-cols-3 items-center gap-4">
                 <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">State</label>
                 <select value={editedTicket?.status || ""} onChange={(e) => updateLocalField("status", e.target.value)} className="col-span-2 p-1.5 border border-border rounded text-xs outline-none h-8">
-                  {["New", "In Progress", "On Hold", "Resolved", "Closed", "Canceled"].map(s => <option key={s} value={s}>{s}</option>)}
+                  {["New", "In Progress", "On Hold", "Awaiting User", "Awaiting Vendor", "Resolved", "Closed", "Canceled"].map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div className="grid grid-cols-3 items-center gap-4">
@@ -791,18 +911,77 @@ export function TicketDetail() {
                 <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Assignment group</label>
                 <select className="col-span-2 p-1.5 border border-border rounded text-xs outline-none h-8" value={editedTicket?.assignmentGroup || ""} onChange={(e) => updateLocalField("assignmentGroup", e.target.value)}>
                   <option value="">-- None --</option>
-                  {visibleGroups.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
+                  {/* Show current value if it's not in the filtered list */}
+                  {editedTicket?.assignmentGroup && !visibleGroups.some(g => g.name === editedTicket.assignmentGroup) && (
+                    <option value={editedTicket.assignmentGroup}>{editedTicket.assignmentGroup}</option>
+                  )}
+                  {(visibleGroups.length > 0 ? visibleGroups : groups.filter(g => g.status === 'active')).map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
                 </select>
               </div>
               <div className="grid grid-cols-3 items-center gap-4">
                 <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Assigned to</label>
-                <select className="col-span-2 p-1.5 border border-border rounded text-xs outline-none h-8" value={editedTicket?.assignedTo || ""} onChange={(e) => updateLocalField("assignedTo", e.target.value)}>
-                  <option value="">-- None --</option>
-                  {editedTicket?.assignedTo && !agents.some(a => a.id === editedTicket.assignedTo) && (
-                    <option value={editedTicket.assignedTo}>{editedTicket.assignedToName || editedTicket.assignedTo} (Legacy)</option>
-                  )}
-                  {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name || agent.email}</option>)}
-                </select>
+                <div className="col-span-2 flex gap-1">
+                  <select className="flex-grow p-1.5 border border-border rounded text-xs outline-none h-8" value={editedTicket?.assignedTo || ""} onChange={(e) => updateLocalField("assignedTo", e.target.value)}>
+                    <option value="">-- None --</option>
+                    {/* Show current assigned user if they are not in the filtered list (Legacy support) */}
+                    {editedTicket?.assignedTo && !filteredAgents.some(a => a.id === editedTicket.assignedTo || a.uid === editedTicket.assignedTo) && (
+                      <option value={editedTicket.assignedTo}>{editedTicket.assignedToName || editedTicket.assignedTo} (Current)</option>
+                    )}
+                    {filteredAgents.map(agent => (
+                      <option key={agent.id} value={agent.uid || agent.id}>
+                        {agent.name || agent.email} {agent.currentWorkload !== undefined ? `(${agent.currentWorkload} tasks)` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-2 bg-sn-green/10 text-sn-green border-sn-green/20 hover:bg-sn-green/20"
+                    title="Auto-Assign to least loaded member"
+                    onClick={() => {
+                      if (filteredAgents.length === 0) return;
+                      const leastLoaded = [...filteredAgents].sort((a, b) => (a.currentWorkload || 0) - (b.currentWorkload || 0))[0];
+                      updateLocalField("assignedTo", leastLoaded.uid || leastLoaded.id);
+                      updateLocalField("assignedToName", leastLoaded.name || leastLoaded.email);
+                    }}
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 items-center gap-4">
+                <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Watch list</label>
+                <div className="col-span-2 relative">
+                  <div className="flex gap-1">
+                    <div className="relative flex-1">
+                      <Users className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        value={editedTicket.watchList || ""}
+                        onChange={(e) => updateLocalField("watchList", e.target.value)}
+                        placeholder="Add users to watch list..."
+                        className="w-full pl-7 pr-3 py-1.5 border border-border rounded text-xs outline-none focus:ring-1 focus:ring-sn-green"
+                      />
+                    </div>
+                    <Button variant="outline" size="sm" className="h-8 px-2"><Search className="w-3.5 h-3.5" /></Button>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 items-center gap-4">
+                <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Work notes list</label>
+                <div className="col-span-2 relative">
+                  <div className="flex gap-1">
+                    <div className="relative flex-1">
+                      <Lock className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        value={editedTicket.workNotesList || ""}
+                        onChange={(e) => updateLocalField("workNotesList", e.target.value)}
+                        placeholder="Add users to work notes list..."
+                        className="w-full pl-7 pr-3 py-1.5 border border-border rounded text-xs outline-none focus:ring-1 focus:ring-amber-500"
+                      />
+                    </div>
+                    <Button variant="outline" size="sm" className="h-8 px-2"><Search className="w-3.5 h-3.5" /></Button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -827,8 +1006,8 @@ export function TicketDetail() {
               onClick={() => setActiveTab(tab)}
               className={cn(
                 "px-6 py-2.5 text-[10px] font-bold uppercase tracking-wider transition-colors border-r border-border h-full",
-                activeTab === tab 
-                  ? "bg-white text-sn-dark border-b-white -mb-px" 
+                activeTab === tab
+                  ? "bg-white text-sn-dark border-b-white -mb-px"
                   : "text-muted-foreground hover:bg-white/50"
               )}
             >
@@ -841,115 +1020,96 @@ export function TicketDetail() {
         {/* Tab Content */}
         <div className="p-6">
           {activeTab === "Notes" ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
-              {/* Left Column: Notes & Lists */}
-              <div className="space-y-6">
-                <div className="space-y-3">
-                  <div className="grid grid-cols-4 items-center gap-4">
-                    <label className="text-[10px] text-right font-bold text-muted-foreground uppercase">Watch list</label>
-                    <div className="col-span-3 flex gap-2">
-                      <input type="text" placeholder="Add users to watch list..." className="flex-grow p-1.5 border border-border rounded text-xs outline-none focus:ring-1 focus:ring-sn-green h-8" />
-                      <button type="button" className="p-1.5 border border-border rounded hover:bg-muted"><Plus className="w-4 h-4" /></button>
+            <div className="space-y-6">
+              {/* Toast Notification */}
+              {postMessage && (
+                <div className={cn(
+                  "flex items-center gap-2 p-3 rounded-lg text-xs font-bold animate-in fade-in slide-in-from-top-2 duration-300",
+                  postMessage.type === 'success' ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"
+                )}>
+                  {postMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                  {postMessage.text}
+                </div>
+              )}
+
+              {/* Dual-Note Input Section */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Work Notes (Internal/Private) */}
+                <div className="rounded-lg border-2 border-amber-200 bg-gradient-to-br from-amber-50/80 to-yellow-50/30 overflow-hidden">
+                  <div className="px-4 py-2.5 bg-amber-100/60 border-b border-amber-200 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Lock className="w-3.5 h-3.5 text-amber-600" />
+                      <span className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">Work Notes</span>
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-800 font-bold uppercase">Internal Only</span>
                     </div>
                   </div>
-                  <div className="grid grid-cols-4 items-center gap-4">
-                    <label className="text-[10px] text-right font-bold text-muted-foreground uppercase">Worknotes list</label>
-                    <div className="col-span-3 flex gap-2">
-                      <input type="text" placeholder="Add team members..." className="flex-grow p-1.5 border border-border rounded text-xs outline-none focus:ring-1 focus:ring-sn-green h-8" />
-                      <button type="button" className="p-1.5 border border-border rounded hover:bg-muted"><Plus className="w-4 h-4" /></button>
+                  <div className="p-4">
+                    <textarea
+                      value={workNote}
+                      onChange={(e) => setWorkNote(e.target.value)}
+                      placeholder="Type internal work notes here... (visible only to agents)"
+                      className="w-full p-3 border border-amber-200 rounded-md text-xs outline-none focus:ring-2 focus:ring-amber-300 min-h-[120px] resize-none bg-white/80 placeholder:text-amber-400"
+                    />
+                    <div className="flex items-center justify-between mt-3">
+                      <span className="text-[9px] text-amber-600 font-medium flex items-center gap-1">
+                        <Lock className="w-3 h-3" /> Not visible to customer
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!workNote.trim() || isPosting}
+                        onClick={(e) => handleAddWorkNote(e)}
+                        className="bg-amber-500 hover:bg-amber-600 text-white font-bold gap-1.5 h-8 px-4 shadow-sm disabled:opacity-50 transition-all"
+                      >
+                        {isPosting ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Send className="w-3 h-3" />}
+                        Post Work Note
+                      </Button>
                     </div>
                   </div>
                 </div>
 
-                <div className="space-y-4 pt-4 border-t border-border">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold text-muted-foreground uppercase">Work notes (Private)</label>
-                      <label className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer">
-                        <input type="checkbox" className="w-3 h-3 rounded" /> Internal only
-                      </label>
+                {/* Additional Comments (External/Customer Visible) */}
+                <div className="rounded-lg border-2 border-blue-200 bg-gradient-to-br from-blue-50/80 to-slate-50/30 overflow-hidden">
+                  <div className="px-4 py-2.5 bg-blue-100/60 border-b border-blue-200 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Globe className="w-3.5 h-3.5 text-blue-600" />
+                      <span className="text-[11px] font-bold text-blue-800 uppercase tracking-wider">Additional Comments</span>
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-blue-200 text-blue-800 font-bold uppercase">Customer Visible</span>
                     </div>
-                    <textarea 
-                      value={workNote} 
-                      onChange={(e) => setWorkNote(e.target.value)} 
-                      placeholder="Type internal worknotes here..." 
-                      className="w-full p-3 border border-border rounded text-xs outline-none focus:ring-1 focus:ring-sn-dark min-h-[100px] resize-none bg-yellow-50/20" 
-                    />
                   </div>
-
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Additional comments (Customer visible)</label>
-                    <textarea 
-                      value={newComment} 
-                      onChange={(e) => setNewComment(e.target.value)} 
-                      placeholder="Type public messages here..." 
-                      className="w-full p-3 border border-border rounded text-xs outline-none focus:ring-1 focus:ring-sn-green min-h-[100px] resize-none" 
+                  <div className="p-4">
+                    <textarea
+                      value={newComment}
+                      onChange={(e) => setNewComment(e.target.value)}
+                      placeholder="Type comments visible to the customer here..."
+                      className="w-full p-3 border border-blue-200 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-300 min-h-[120px] resize-none bg-white/80 placeholder:text-blue-400"
                     />
-                  </div>
-
-                  <div className="flex justify-end pt-2">
-                    <Button 
-                      type="button"
-                      onClick={(e) => {
-                        if (workNote.trim()) handleAddWorkNote(e);
-                        if (newComment.trim()) handleAddComment(e);
-                      }} 
-                      className="bg-sn-green text-sn-dark font-bold gap-2 px-8 h-10 shadow-lg hover:shadow-sn-green/20"
-                    >
-                      <Send className="w-4 h-4" /> Post Comment
-                    </Button>
+                    <div className="flex items-center justify-between mt-3">
+                      <span className="text-[9px] text-blue-600 font-medium flex items-center gap-1">
+                        <Globe className="w-3 h-3" /> Visible to customer
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!newComment.trim() || isPosting}
+                        onClick={(e) => handleAddComment(e)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white font-bold gap-1.5 h-8 px-4 shadow-sm disabled:opacity-50 transition-all"
+                      >
+                        {isPosting ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Send className="w-3 h-3" />}
+                        Post Comment
+                      </Button>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Right Column: Activity Stream */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between border-b border-border pb-2">
-                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Activity Stream</h3>
-                  <button type="button" className="text-[10px] font-bold text-muted-foreground hover:text-sn-dark uppercase tracking-widest">Filter</button>
-                </div>
-                <div className="space-y-6 max-h-[500px] overflow-y-auto pr-4 custom-scrollbar">
-                  {comments.length === 0 && (
-                    <div className="text-center py-12 text-muted-foreground">
-                      <History className="w-8 h-8 mx-auto mb-2 opacity-20" />
-                      <p className="text-xs">No activity recorded yet</p>
-                    </div>
-                  )}
-                  {comments.map((comment) => (
-                    <div key={comment.id} className="relative pl-6 pb-6 last:pb-0 border-l border-border ml-2">
-                      <div className={cn(
-                        "absolute -left-[9px] top-0 w-4 h-4 rounded-full border-2 border-white flex items-center justify-center",
-                        comment.type === "work_note" ? "bg-yellow-400" : "bg-sn-green"
-                      )}>
-                        {comment.type === "work_note" ? <Save className="w-2 h-2 text-white" /> : <MessageSquare className="w-2 h-2 text-white" />}
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[11px] font-bold text-sn-dark">{comment.userName}</span>
-                          <span className="text-[10px] text-muted-foreground">{formatDate(comment.createdAt)}</span>
-                        </div>
-                        <div className={cn(
-                          "p-3 rounded text-xs",
-                          comment.type === "work_note" ? "bg-yellow-50 text-sn-dark border border-yellow-200" : "bg-muted/30 text-muted-foreground"
-                        )}>
-                          {comment.message}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  <div className="relative pl-6 border-l border-border ml-2">
-                    <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center">
-                      <CheckCircle2 className="w-2 h-2 text-white" />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-sn-dark italic">Ticket Created</span>
-                        <span className="text-[10px] text-muted-foreground">{formatDate(ticket.createdAt)}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              {/* Activity Timeline (API-backed) */}
+              <ActivityTimeline
+                ticketId={id || ''}
+                createdAt={ticket.createdAt}
+                refreshTrigger={timelineRefresh}
+                userRole={profile?.role}
+              />
             </div>
           ) : activeTab === "Related Records" ? (
             <div className="space-y-8 animate-in fade-in duration-300">
@@ -986,11 +1146,12 @@ export function TicketDetail() {
                         </td>
                         <td className="px-4 py-3 text-muted-foreground font-mono">{formatDate(ticket.responseDeadline)}</td>
                         <td className="px-4 py-3 text-muted-foreground">
-                          <SLATimer 
-                            label="Resp" 
-                            deadline={ticket.responseDeadline} 
-                            metAt={ticket.firstResponseAt} 
-                            isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer"}
+                          <SLATimer
+                            label="Resp"
+                            deadline={ticket.responseDeadline}
+                            startTime={ticket.responseSlaStartTime || ticket.createdAt}
+                            metAt={ticket.firstResponseAt}
+                            isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer" || ticket.status === "Awaiting User" || ticket.status === "Awaiting Vendor"}
                             onHoldStart={ticket.onHoldStart}
                             totalPausedTime={ticket.totalPausedTime}
                           />
@@ -1009,11 +1170,12 @@ export function TicketDetail() {
                         </td>
                         <td className="px-4 py-3 text-muted-foreground font-mono">{formatDate(ticket.resolutionDeadline)}</td>
                         <td className="px-4 py-3 text-muted-foreground">
-                          <SLATimer 
-                            label="Res" 
-                            deadline={ticket.resolutionDeadline} 
-                            metAt={ticket.resolvedAt} 
-                            isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer"}
+                          <SLATimer
+                            label="Res"
+                            deadline={ticket.resolutionDeadline}
+                            startTime={ticket.resolutionSlaStartTime || ticket.createdAt}
+                            metAt={ticket.resolvedAt}
+                            isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer" || ticket.status === "Awaiting User" || ticket.status === "Awaiting Vendor"}
                             onHoldStart={ticket.onHoldStart}
                             totalPausedTime={ticket.totalPausedTime}
                             waitUntil={ticket.firstResponseAt ?? null}
@@ -1058,37 +1220,124 @@ export function TicketDetail() {
                     </div>
                   </div>
                   <div className="grid grid-cols-3 items-center gap-4">
-                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase">Resolution code</label>
-                    <select 
-                      value={editedTicket?.resolutionCode || ""} 
+                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Resolution code</label>
+                    <select
+                      value={editedTicket?.resolutionCode || ""}
                       onChange={(e) => updateLocalField("resolutionCode", e.target.value)}
+                      className="col-span-2 p-1.5 border border-border rounded text-xs outline-none h-8 font-semibold text-blue-600"
+                    >
+                      <option value="">-- None --</option>
+                      {[
+                        "Permanent Fix Applied",
+                        "Temporary Workaround Provided",
+                        "Configuration Change",
+                        "Software Patch Applied",
+                        "Hardware Replaced",
+                        "Access / Permission Corrected",
+                        "Network Issue Resolved",
+                        "User Guidance Provided",
+                        "Third-Party Vendor Resolution",
+                        "Monitoring / No Issue Found",
+                        "Auto Resolved",
+                        "Duplicate Ticket",
+                        "Cancelled by User",
+                        "Cannot Reproduce",
+                        "No Response from User"
+                      ].map(code => (
+                        <option key={code} value={code}>{code}</option>
+                      ))}
+                      {/* Backward compatibility for old codes */}
+                      {editedTicket?.resolutionCode && ![
+                        "Permanent Fix Applied",
+                        "Temporary Workaround Provided",
+                        "Configuration Change",
+                        "Software Patch Applied",
+                        "Hardware Replaced",
+                        "Access / Permission Corrected",
+                        "Network Issue Resolved",
+                        "User Guidance Provided",
+                        "Third-Party Vendor Resolution",
+                        "Monitoring / No Issue Found",
+                        "Auto Resolved",
+                        "Duplicate Ticket",
+                        "Cancelled by User",
+                        "Cannot Reproduce",
+                        "No Response from User"
+                      ].includes(editedTicket.resolutionCode) && (
+                          <option value={editedTicket.resolutionCode}>{editedTicket.resolutionCode} (Legacy)</option>
+                        )}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-3 items-center gap-4">
+                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Resolution method</label>
+                    <select
+                      value={editedTicket?.resolutionMethod || ""}
+                      onChange={(e) => updateLocalField("resolutionMethod", e.target.value)}
                       className="col-span-2 p-1.5 border border-border rounded text-xs outline-none h-8"
                     >
                       <option value="">-- None --</option>
-                      <option value="solved_workaround">Solved (Workaround)</option>
-                      <option value="solved_permanent">Solved (Permanent Fix)</option>
-                      <option value="solved_remote">Solved Remotely</option>
-                      <option value="not_solved">Not Solved (Duplicate/Cancelled)</option>
+                      {[
+                        "Remote Support",
+                        "Onsite Support",
+                        "Phone Support",
+                        "Email Support",
+                        "Chat Support",
+                        "Self-Service",
+                        "Automated Resolution",
+                        "Third-Party Vendor",
+                        "Field Engineer Visit"
+                      ].map(method => (
+                        <option key={method} value={method}>{method}</option>
+                      ))}
                     </select>
                   </div>
+                  {(editedTicket?.resolutionCode === "Duplicate Ticket" ||
+                    editedTicket?.resolutionCode === "Cancelled by User" ||
+                    editedTicket?.resolutionCode === "Cannot Reproduce" ||
+                    editedTicket?.resolutionCode === "No Response from User") && (
+                      <div className="grid grid-cols-3 items-center gap-4 animate-in slide-in-from-top-1 duration-200">
+                        <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Closure reason</label>
+                        <select
+                          value={editedTicket?.closureReason || ""}
+                          onChange={(e) => updateLocalField("closureReason", e.target.value)}
+                          className="col-span-2 p-1.5 border border-border rounded text-xs outline-none h-8"
+                        >
+                          <option value="">-- None --</option>
+                          {[
+                            "Duplicate Ticket",
+                            "Cancelled by User",
+                            "Rejected Request",
+                            "No Response from User",
+                            "Cannot Reproduce",
+                            "Invalid Request"
+                          ].map(reason => (
+                            <option key={reason} value={reason}>{reason}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   <div className="grid grid-cols-3 items-start gap-4">
-                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase mt-1.5">Resolution notes</label>
-                    <textarea 
-                      value={editedTicket?.resolutionNotes || ""} 
+                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase mt-1.5 leading-tight">Resolution notes</label>
+                    <textarea
+                      value={editedTicket?.resolutionNotes || ""}
                       onChange={(e) => updateLocalField("resolutionNotes", e.target.value)}
-                      className="col-span-2 p-2 border border-border rounded text-xs outline-none min-h-[100px] resize-none" 
-                      placeholder="Enter resolution details..."
+                      className="col-span-2 p-2 border border-border rounded text-xs outline-none min-h-[80px] resize-none focus:ring-1 focus:ring-blue-500 transition-all"
+                      placeholder="Explain how the issue was resolved..."
                     />
                   </div>
                 </div>
                 <div className="space-y-4">
                   <div className="grid grid-cols-3 items-center gap-4">
-                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase">Resolved by</label>
+                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Resolution duration</label>
+                    <input readOnly value={ticket.resolutionDuration ? `${Math.round(ticket.resolutionDuration / 3600000)}h ${Math.round((ticket.resolutionDuration % 3600000) / 60000)}m` : "—"} className="col-span-2 p-1.5 bg-muted/30 border border-border rounded text-xs font-mono" />
+                  </div>
+                  <div className="grid grid-cols-3 items-center gap-4">
+                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Resolved by</label>
                     <input readOnly value={ticket.resolvedBy || profile?.name || "-"} className="col-span-2 p-1.5 bg-muted/30 border border-border rounded text-xs" />
                   </div>
                   <div className="grid grid-cols-3 items-center gap-4">
-                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase">Resolved at</label>
-                    <input readOnly value={formatDate(ticket.resolvedAt)} className="col-span-2 p-1.5 bg-muted/30 border border-border rounded text-xs font-mono" />
+                    <label className="text-[11px] text-right font-medium text-muted-foreground uppercase leading-tight">Resolved at</label>
+                    <input readOnly value={ticket.resolvedAt ? new Date(ticket.resolvedAt).toLocaleString() : "—"} className="col-span-2 p-1.5 bg-muted/30 border border-border rounded text-xs font-mono" />
                   </div>
                 </div>
               </div>

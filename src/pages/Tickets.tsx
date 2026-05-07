@@ -15,7 +15,7 @@ function SLATimer({ deadline, metAt, isPaused, onHoldStart, totalPausedTime = 0,
   const [status, setStatus] = useState<"waiting" | "met" | "breached" | "active" | "paused">("active");
 
   useEffect(() => {
-    if (metAt) { setStatus("met"); setDisplayTime("MET"); return; }
+    if (metAt) { setStatus("met"); setDisplayTime("MET ✓"); return; }
 
     // Resolution waiting for response — only when waitUntil is explicitly passed as null/empty
     if (waitUntil !== undefined && (waitUntil === null || waitUntil === "")) {
@@ -25,6 +25,8 @@ function SLATimer({ deadline, metAt, isPaused, onHoldStart, totalPausedTime = 0,
     const deadlineMs = new Date(deadline).getTime();
     if (isNaN(deadlineMs)) { setDisplayTime("--:--:--"); return; }
 
+    let timer: ReturnType<typeof setInterval> | null = null;
+
     const tick = () => {
       const now = Date.now();
       const effectiveNow = (isPaused && onHoldStart) ? new Date(onHoldStart).getTime() : now;
@@ -32,9 +34,9 @@ function SLATimer({ deadline, metAt, isPaused, onHoldStart, totalPausedTime = 0,
 
       if (diff <= 0) {
         setStatus("breached");
-        const over = Math.abs(diff);
-        const h = Math.floor(over / 3600000), m = Math.floor((over % 3600000) / 60000), s = Math.floor((over % 60000) / 1000);
-        setDisplayTime(`-${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`);
+        setDisplayTime("00:00:00");
+        // Stop ticking once breached
+        if (timer) { clearInterval(timer); timer = null; }
       } else {
         setStatus(isPaused ? "paused" : "active");
         const h = Math.floor(diff / 3600000), m = Math.floor((diff % 3600000) / 60000), s = Math.floor((diff % 60000) / 1000);
@@ -43,13 +45,18 @@ function SLATimer({ deadline, metAt, isPaused, onHoldStart, totalPausedTime = 0,
     };
 
     tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
+    timer = setInterval(tick, 1000);
+    return () => { if (timer) clearInterval(timer); };
   }, [deadline, metAt, isPaused, onHoldStart, totalPausedTime, waitUntil]);
 
   return (
     <div className="flex flex-col gap-0.5 min-w-[80px]">
-      <span className="text-[9px] uppercase text-muted-foreground font-bold leading-none">{label}</span>
+      <div className="flex items-center justify-between">
+        <span className="text-[9px] uppercase text-muted-foreground font-bold leading-none">{label}</span>
+        {status === "breached" && (
+          <span className="text-[7px] font-black text-red-600 uppercase animate-pulse">SLA</span>
+        )}
+      </div>
       <span className={cn(
         "text-[11px] font-mono font-bold leading-none",
         status === "met" ? "text-green-600" :
@@ -125,12 +132,12 @@ export function Tickets() {
   const visibleSubcategories = subcategories.filter(s => s.status === 'active');
   const visibleProviders = serviceProviders.filter(p => p.status === 'active');
   const visibleGroups = groups.filter(g => g.status === 'active');
-  
+
   // DYNAMIC GROUP FILTERING (Requirement: Only users belonging to the selected group)
   const selectedGroupObj = groups.find(g => g.name === newTicket.assignmentGroup);
-  const visibleMembers = allUsers.filter(u => 
+  const visibleMembers = allUsers.filter(u =>
     selectedGroupObj?.memberIds?.includes(u.id)
-  ); 
+  );
 
   useEffect(() => {
     if (!newTicket.categoryId && visibleCategories[0]) {
@@ -334,10 +341,10 @@ export function Tickets() {
         || slaPolicies.find(p => p.priority === priority)
         || { responseTimeHours: 4, resolutionTimeHours: 24 }; // Fallback
 
-      const now = Date.now();
-      const responseDeadline = new Date(now + (matchingPolicy.responseTimeHours || 4) * 60 * 60 * 1000);
+      const now = new Date();
+      const responseDeadline = new Date(now.getTime() + (matchingPolicy.responseTimeHours || 4) * 60 * 60 * 1000);
       // Resolution deadline is from now (full window), but the timer won't start until response is given
-      const resolutionDeadline = new Date(now + ((matchingPolicy.responseTimeHours || 4) + (matchingPolicy.resolutionTimeHours || 24)) * 60 * 60 * 1000);
+      const resolutionDeadline = new Date(now.getTime() + ((matchingPolicy.responseTimeHours || 4) + (matchingPolicy.resolutionTimeHours || 24)) * 60 * 60 * 1000);
 
       const ticketNumber = `INC${Math.floor(1000000 + Math.random() * 9000000)}`;
 
@@ -345,18 +352,23 @@ export function Tickets() {
       let responseSlaStatus = "In Progress";
       let resolutionSlaStatus = "In Progress";
 
-      if (responseDeadline.getTime() <= now || resolutionDeadline.getTime() <= now) {
+      if (responseDeadline.getTime() <= now.getTime() || resolutionDeadline.getTime() <= now.getTime()) {
         priority = "1 - Critical";
-        responseSlaStatus = responseDeadline.getTime() <= now ? "Breached" : "In Progress";
-        resolutionSlaStatus = resolutionDeadline.getTime() <= now ? "Breached" : "In Progress";
+        responseSlaStatus = responseDeadline.getTime() <= now.getTime() ? "Breached" : "In Progress";
+        resolutionSlaStatus = resolutionDeadline.getTime() <= now.getTime() ? "Breached" : "In Progress";
       }
 
       // Workflow Automation: Auto-assignment based on category
       const assignmentGroup = newTicket.assignmentGroup || visibleGroups[0]?.name || "Service Desk";
 
-      // Determine assigned user name if applicable
+      // Determine assigned user name if applicable (fix: check both id and userId fields)
       const assignedUserName = newTicket.assignedTo
-        ? visibleMembers.find(m => m.userId === newTicket.assignedTo)?.userName || agents.find(a => a.id === newTicket.assignedTo)?.name || ""
+        ? visibleMembers.find(m => m.id === newTicket.assignedTo)?.name
+        || visibleMembers.find(m => m.id === newTicket.assignedTo)?.userName
+        || visibleMembers.find(m => m.userId === newTicket.assignedTo)?.userName
+        || agents.find(a => a.id === newTicket.assignedTo)?.name
+        || allUsers.find(u => u.id === newTicket.assignedTo)?.name
+        || ""
         : "";
 
       const ticketData = {
@@ -371,6 +383,8 @@ export function Tickets() {
         updatedAt: serverTimestamp(),
         responseDeadline: responseDeadline.toISOString(),
         resolutionDeadline: resolutionDeadline.toISOString(),
+        responseSlaStartTime: now.toISOString(),
+        resolutionSlaStartTime: now.toISOString(),
         responseSlaStatus,
         resolutionSlaStatus,
         totalPausedTime: 0,
@@ -381,6 +395,30 @@ export function Tickets() {
 
       const docRef = await addDoc(collection(db, "tickets"), ticketData);
       console.log("Ticket created successfully with ID:", docRef.id);
+
+      // Log creation to activity timeline (Unified Activity Stream)
+      try {
+        await fetch(`/api/tickets/${docRef.id}/activities`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activity_type: 'system',
+            visibility_type: 'public',
+            created_by: user.uid,
+            created_by_name: profile?.name || user.email,
+            message: `Ticket Created by ${profile?.name || user.email}`,
+            metadata_json: {
+              priority,
+              category: newTicket.category,
+              assignmentGroup,
+              status: ticketData.status,
+              shortDescription: newTicket.title
+            }
+          })
+        });
+      } catch (e) {
+        console.error("Failed to log creation activity:", e);
+      }
 
       setIsModalOpen(false);
       alert(`Ticket ${ticketNumber} has been created successfully.`);
@@ -525,16 +563,18 @@ export function Tickets() {
                         <SLATimer
                           label="Resp"
                           deadline={ticket.responseDeadline}
+                          startTime={ticket.responseSlaStartTime || ticket.createdAt}
                           metAt={ticket.firstResponseAt}
-                          isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer"}
+                          isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer" || ticket.status === "Awaiting User" || ticket.status === "Awaiting Vendor"}
                           onHoldStart={ticket.onHoldStart}
                           totalPausedTime={ticket.totalPausedTime}
                         />
                         <SLATimer
                           label="Res"
                           deadline={ticket.resolutionDeadline}
+                          startTime={ticket.resolutionSlaStartTime || ticket.createdAt}
                           metAt={ticket.resolvedAt}
-                          isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer"}
+                          isPaused={ticket.status === "On Hold" || ticket.status === "Waiting for Customer" || ticket.status === "Awaiting User" || ticket.status === "Awaiting Vendor"}
                           onHoldStart={ticket.onHoldStart}
                           totalPausedTime={ticket.totalPausedTime}
                           waitUntil={ticket.firstResponseAt ?? null}
@@ -760,7 +800,7 @@ export function Tickets() {
                       value={newTicket.assignmentGroup}
                       onChange={e => {
                         const group = visibleGroups.find(g => g.name === e.target.value);
-                        setNewTicket({...newTicket, assignmentGroup: e.target.value, selectedGroupId: group?.id || "", assignedTo: ""});
+                        setNewTicket({ ...newTicket, assignmentGroup: e.target.value, selectedGroupId: group?.id || "", assignedTo: "" });
                       }}
                       className="col-span-2 p-1.5 border border-border rounded text-xs outline-none focus:ring-1 focus:ring-sn-green h-8"
                     >

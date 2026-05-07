@@ -39,13 +39,45 @@ export type ServiceProviderItem = {
 export type GroupItem = {
   id: string;
   name: string;
-  serviceProviderId: string;
-  shiftTiming?: string;
-  escalationLevel?: string;
-  status: Status;
+  code?: string;
+  description?: string;
+  type: string;             // Service Desk, L2 Support, etc.
+  managerId?: string;       // Reference to users.uid
+  managerName?: string;
+  emailAlias?: string;
+  businessHours?: string;
+  timezone?: string;
+  escalationGroupId?: string;
+  parentGroupId?: string;
+  defaultAssigneeId?: string;
+  status: Status;           // active/inactive
+  autoAssignmentEnabled: boolean;
+  roundRobinEnabled: boolean;
+  skillTags?: string[];
+  queueCapacity?: number;
+  region?: string;
+  slaPolicyId?: string;
+  memberCount: number;
+  openTickets?: number;
+  slaCompliance?: number;
   createdAt: any;
   createdBy: string;
+  updatedAt?: any;
+  updatedBy?: string;
 };
+
+export const GROUP_TYPES = [
+  "Service Desk",
+  "L1 Support",
+  "L2 Support",
+  "L3 Engineering",
+  "Infrastructure Team",
+  "Network Team",
+  "Security Team",
+  "Vendor Support",
+  "Field Support",
+  "Approval Group"
+];
 
 export type GroupMemberItem = {
   id: string;
@@ -53,11 +85,23 @@ export type GroupMemberItem = {
   userName: string;
   userEmail: string;
   groupId: string;
-  roleInGroup: string;
+  roleInGroup: string;      // Manager, Team Lead, etc.
+  isPrimary: boolean;
+  availabilityStatus: "available" | "away" | "offline";
+  currentWorkload: number;
+  skills?: string[];
   status: Status;
   createdAt: any;
   createdBy: string;
 };
+
+export const GROUP_MEMBER_ROLES = [
+  "Group Manager",
+  "Team Lead",
+  "Senior Agent",
+  "Support Agent",
+  "Observer"
+];
 
 export type AuditLog = {
   id: string;

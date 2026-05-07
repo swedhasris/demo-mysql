@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Trophy, Medal, Star, Target, TrendingUp, Award, RefreshCw, ShieldCheck, Clock, AlertTriangle, Zap } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import { collection, query, where, getDocs, Timestamp } from "firebase/firestore";
 import { db } from "../lib/firebase";
 

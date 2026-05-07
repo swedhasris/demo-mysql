@@ -83,6 +83,20 @@ async function getSQLiteDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_tc_timesheet ON time_cards(timesheet_id);
       CREATE INDEX IF NOT EXISTS idx_tc_user_date ON time_cards(user_id, entry_date);
+      CREATE TABLE IF NOT EXISTS ticket_activities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id TEXT NOT NULL,
+        activity_type TEXT NOT NULL,
+        visibility_type TEXT NOT NULL,
+        created_by TEXT,
+        created_by_name TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        message TEXT NOT NULL,
+        metadata_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_ta_ticket ON ticket_activities(ticket_id);
+      CREATE INDEX IF NOT EXISTS idx_ta_created ON ticket_activities(created_at);
+      CREATE INDEX IF NOT EXISTS idx_ta_visibility ON ticket_activities(visibility_type);
     `);
     console.log('[SQLite] Timesheet database initialized');
   }
@@ -228,11 +242,11 @@ async function escalateStaleTickets() {
         const fields = Object.keys(updates).map(key => `${key} = ?`).join(', ');
         await execute(`UPDATE tickets SET ${fields}, updated_at = ? WHERE id = ?`, [...Object.values(updates), formatDate(new Date()), ticket.id]);
 
-        // Add history entries
+        // Add history entries to activities
         for (const entry of historyEntries) {
           await execute(
-            "INSERT INTO ticket_history (ticket_id, action, user, timestamp, details) VALUES (?, ?, ?, ?, ?)",
-            [ticket.id, entry.action, entry.user, entry.timestamp, JSON.stringify(entry)]
+            "INSERT INTO ticket_activities (ticket_id, activity_type, visibility_type, created_by, created_by_name, message, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [ticket.id, 'sla_triggered', 'internal', 'System Engine', entry.user, entry.action, JSON.stringify(entry)]
           );
         }
       }
@@ -258,48 +272,68 @@ async function startServer() {
   await testConnection();
 
   // Auto-create timesheet tables if they don't exist
-  try {
-    await execute(`
-      CREATE TABLE IF NOT EXISTS timesheets (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id VARCHAR(128) NOT NULL,
-        week_start DATE NOT NULL,
-        week_end DATE NOT NULL,
-        status ENUM('Draft', 'Submitted', 'Approved', 'Rejected') DEFAULT 'Draft',
-        total_hours DECIMAL(10, 2) DEFAULT 0.00,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        submitted_at TIMESTAMP NULL,
-        INDEX idx_user_week (user_id, week_start),
-        INDEX idx_status (status)
-      ) ENGINE=InnoDB
-    `);
-    await execute(`
-      CREATE TABLE IF NOT EXISTS time_cards (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        timesheet_id INT NOT NULL,
-        user_id VARCHAR(128) NOT NULL,
-        entry_date DATE NOT NULL,
-        task VARCHAR(255),
-        hours_worked DECIMAL(10, 2) DEFAULT 0.00,
-        description TEXT,
-        short_description VARCHAR(255),
-        start_time VARCHAR(20),
-        end_time VARCHAR(20),
-        deduct DECIMAL(10, 2) DEFAULT 0.00,
-        work_type VARCHAR(50),
-        billable VARCHAR(50),
-        status ENUM('Draft', 'Submitted', 'Approved', 'Rejected') DEFAULT 'Draft',
-        elapsed_seconds INT DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_timesheet_id (timesheet_id),
-        INDEX idx_user_date (user_id, entry_date)
-      ) ENGINE=InnoDB
-    `);
-    console.log('[MySQL] Timesheet tables initialized');
-  } catch (e: any) {
-    console.error('[MySQL] Failed to initialize timesheet tables:', e.message);
+  if (!useSQLite) {
+    try {
+      await execute(`
+        CREATE TABLE IF NOT EXISTS timesheets (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id VARCHAR(128) NOT NULL,
+          week_start DATE NOT NULL,
+          week_end DATE NOT NULL,
+          status ENUM('Draft', 'Submitted', 'Approved', 'Rejected') DEFAULT 'Draft',
+          total_hours DECIMAL(10, 2) DEFAULT 0.00,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          submitted_at TIMESTAMP NULL,
+          INDEX idx_user_week (user_id, week_start),
+          INDEX idx_status (status)
+        ) ENGINE=InnoDB
+      `);
+
+      await execute(`
+        CREATE TABLE IF NOT EXISTS ticket_activities (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          ticket_id VARCHAR(128) NOT NULL,
+          activity_type VARCHAR(50) NOT NULL,
+          visibility_type VARCHAR(50) NOT NULL,
+          created_by VARCHAR(128),
+          created_by_name VARCHAR(255),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          message TEXT NOT NULL,
+          metadata_json JSON,
+          INDEX idx_ticket_id (ticket_id),
+          INDEX idx_created_at (created_at),
+          INDEX idx_visibility (visibility_type)
+        ) ENGINE=InnoDB
+      `);
+
+      await execute(`
+        CREATE TABLE IF NOT EXISTS time_cards (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          timesheet_id INT NOT NULL,
+          user_id VARCHAR(128) NOT NULL,
+          entry_date DATE NOT NULL,
+          task VARCHAR(255),
+          hours_worked DECIMAL(10, 2) DEFAULT 0.00,
+          description TEXT,
+          short_description VARCHAR(255),
+          start_time VARCHAR(20),
+          end_time VARCHAR(20),
+          deduct DECIMAL(10, 2) DEFAULT 0.00,
+          work_type VARCHAR(50),
+          billable VARCHAR(50),
+          status ENUM('Draft', 'Submitted', 'Approved', 'Rejected') DEFAULT 'Draft',
+          elapsed_seconds INT DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_timesheet_id (timesheet_id),
+          INDEX idx_user_date (user_id, entry_date)
+        ) ENGINE=InnoDB
+      `);
+      console.log('[MySQL] Timesheet tables initialized');
+    } catch (e: any) {
+      console.error('[MySQL] Failed to initialize timesheet tables:', e.message);
+    }
   }
 
   // API Routes
@@ -467,17 +501,17 @@ async function startServer() {
 
       const ticketId = result.insertId;
 
-      // Add creation history
+      // Add creation activity to timeline
       await execute(
-        "INSERT INTO ticket_history (ticket_id, action, user, details) VALUES (?, ?, ?, ?)",
-        [ticketId, "Ticket Created via API", req.body.caller || "System", JSON.stringify(ticketData)]
+        "INSERT INTO ticket_activities (ticket_id, activity_type, visibility_type, created_by, created_by_name, message, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [ticketId, "system", "public", req.body.caller || "System", req.body.createdByName || req.body.caller || "System", "Ticket created", JSON.stringify(ticketData)]
       );
 
       // Workflow Automation: Notify Manager for High Priority
       if (req.body.priority === "1 - Critical" || req.body.priority === "2 - High") {
         await execute(
-          "INSERT INTO ticket_history (ticket_id, action, user, details) VALUES (?, ?, ?, ?)",
-          [ticketId, "Manager Notified (High Priority)", "System Automation", "High priority ticket created"]
+          "INSERT INTO ticket_activities (ticket_id, activity_type, visibility_type, created_by, created_by_name, message, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [ticketId, "system", "internal", "System Automation", "System Automation", "Manager Notified (High Priority)", JSON.stringify({ reason: "High priority ticket created" })]
         );
       }
 
@@ -539,11 +573,20 @@ async function startServer() {
 
       await execute(`UPDATE tickets SET ${setClause} WHERE id = ?`, values);
 
-      // Add history entry for status change
-      if (req.body.status && req.body.status !== ticket.status) {
+      // Add activity entry for status/field changes
+      if (Object.keys(updateData).length > 0) {
+        let actionMsg = "Ticket updated";
+        if (req.body.status && req.body.status !== ticket.status) {
+          actionMsg = `Status changed to ${req.body.status}`;
+        } else if (req.body.assignedTo && req.body.assignedTo !== ticket.assigned_to) {
+          actionMsg = `Assigned to updated`;
+        } else if (req.body.priority && req.body.priority !== ticket.priority) {
+          actionMsg = `Priority changed to ${req.body.priority}`;
+        }
+
         await execute(
-          "INSERT INTO ticket_history (ticket_id, action, user, details) VALUES (?, ?, ?, ?)",
-          [id, `Status changed to ${req.body.status}`, req.body.updatedBy || "System", JSON.stringify({ oldStatus: ticket.status, newStatus: req.body.status })]
+          "INSERT INTO ticket_activities (ticket_id, activity_type, visibility_type, created_by, created_by_name, message, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [id, "status_change", "public", req.body.updatedById || "System", req.body.updatedBy || "System", actionMsg, JSON.stringify({ oldStatus: ticket.status, newStatus: req.body.status, updates: updateData })]
         );
       }
 
@@ -710,15 +753,97 @@ async function startServer() {
     }
   });
 
-  // Comments Endpoint
+  // Activities Timeline Endpoints
+  app.get("/api/tickets/:id/activities", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { visibility, activity_type, limit, offset } = req.query;
+
+      let sql = "SELECT * FROM ticket_activities WHERE ticket_id = ?";
+      const params: any[] = [id];
+
+      // Visibility filter: 'public' hides internal notes (for customer-facing views)
+      if (visibility === 'public') {
+        sql += " AND visibility_type = 'public'";
+      } else if (visibility === 'internal') {
+        sql += " AND visibility_type = 'internal'";
+      }
+
+      // Activity type filter for frontend filter tabs
+      if (activity_type) {
+        const types = (activity_type as string).split(',');
+        sql += ` AND activity_type IN (${types.map(() => '?').join(',')})`;
+        params.push(...types);
+      }
+
+      sql += " ORDER BY created_at ASC";
+
+      // Pagination support
+      if (limit) {
+        sql += " LIMIT ?";
+        params.push(parseInt(limit as string) || 50);
+        if (offset) {
+          sql += " OFFSET ?";
+          params.push(parseInt(offset as string) || 0);
+        }
+      }
+
+      const activities = await query(sql, params);
+      res.json(activities.map(a => ({ id: a.id.toString(), ...a })));
+    } catch (error: any) {
+      console.error("Error fetching activities:", error);
+      res.status(500).json({ error: "Failed to fetch activities" });
+    }
+  });
+
+  app.post("/api/tickets/:id/activities", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { activity_type, visibility_type, created_by, created_by_name, message, metadata_json } = req.body;
+
+      // Validate required fields
+      if (!message || !message.trim()) {
+        return res.status(400).json({ error: "Message content is required" });
+      }
+
+      const actType = activity_type || 'comment';
+      const visType = visibility_type || (actType === 'work_note' ? 'internal' : 'public');
+
+      const result = await execute(
+        "INSERT INTO ticket_activities (ticket_id, activity_type, visibility_type, created_by, created_by_name, message, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [id, actType, visType, created_by || 'System', created_by_name || 'System', message.trim(), metadata_json ? JSON.stringify(metadata_json) : null]
+      );
+
+      // Update ticket's updated_at timestamp when a note is added
+      try {
+        await execute("UPDATE tickets SET updated_at = ? WHERE id = ?", [formatDate(new Date()), id]);
+      } catch (e) {
+        // Non-critical — ticket may be Firestore-only
+      }
+
+      const activities = await query("SELECT * FROM ticket_activities WHERE id = ?", [result.insertId]);
+      res.json({ id: result.insertId.toString(), ...activities[0] });
+    } catch (error: any) {
+      console.error("Error adding activity:", error);
+      res.status(500).json({ error: "Failed to add activity" });
+    }
+  });
+
+  // Comments Endpoint (Legacy)
   app.post("/api/tickets/:id/comments", async (req, res) => {
     try {
       const { id } = req.params;
       const { user_id, user_name, message, is_internal } = req.body;
 
+      // Keep legacy support but also insert into new table
       const result = await execute(
         "INSERT INTO comments (ticket_id, user_id, user_name, message, is_internal) VALUES (?, ?, ?, ?, ?)",
         [id, user_id, user_name, message, is_internal ? 1 : 0]
+      );
+
+      await execute(
+        "INSERT INTO ticket_activities (ticket_id, activity_type, visibility_type, created_by, created_by_name, message) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, is_internal ? 'work_note' : 'comment', is_internal ? 'internal' : 'public', user_id, user_name, message]
       );
 
       const comments = await query("SELECT * FROM comments WHERE id = ?", [result.insertId]);
@@ -1328,16 +1453,16 @@ Respond ONLY with valid JSON.`;
         return res.json(activityFallback(previous_activity, pageUrl, pageType, idleSeconds, appName, ticketNumber));
       }
 
-      const app_     = appName || 'Connect IT';
-      const prevStr  = previous_activity ? `\nPrevious activity: ${previous_activity}` : '';
-      const idleStr  = idleSeconds > 60  ? `\nUser idle for ${idleSeconds}s.` : '';
-      const tickStr  = ticketNumber      ? `\nActive ticket: ${ticketNumber}` : '';
+      const app_ = appName || 'Connect IT';
+      const prevStr = previous_activity ? `\nPrevious activity: ${previous_activity}` : '';
+      const idleStr = idleSeconds > 60 ? `\nUser idle for ${idleSeconds}s.` : '';
+      const tickStr = ticketNumber ? `\nActive ticket: ${ticketNumber}` : '';
       const clickStr = recentClicks?.length ? `\nRecent clicks: ${recentClicks.join(' → ')}` : '';
-      const keyStr   = recentKeys > 0    ? `\nKeystrokes: ${recentKeys}` : '';
-      const headStr  = headings?.length  ? `\nPage headings: ${headings.join(' | ')}` : '';
-      const formStr  = formData && Object.keys(formData).length
-        ? `\nForm fields: ${Object.entries(formData).map(([k,v]) => `${k}="${v}"`).join(', ')}` : '';
-      const textStr  = visibleText       ? `\nVisible text: ${visibleText}` : '';
+      const keyStr = recentKeys > 0 ? `\nKeystrokes: ${recentKeys}` : '';
+      const headStr = headings?.length ? `\nPage headings: ${headings.join(' | ')}` : '';
+      const formStr = formData && Object.keys(formData).length
+        ? `\nForm fields: ${Object.entries(formData).map(([k, v]) => `${k}="${v}"`).join(', ')}` : '';
+      const textStr = visibleText ? `\nVisible text: ${visibleText}` : '';
 
       const contextText = `You are an AI model that analyzes screenshots of a user's computer screen.
 Your task is to identify the application, detect the website (if any), understand the activity, and generate a short professional description.
@@ -1424,17 +1549,17 @@ OUTPUT FORMAT (STRICT JSON — no markdown, no extra text):
       catch { parsed = activityFallback(previous_activity, pageUrl, pageType, idleSeconds, appName, ticketNumber); }
 
       // Map new format fields → response
-      const detectedApp     = parsed.app      || parsed.detected_app     || appName || null;
-      const detectedWebsite = parsed.website  || parsed.detected_website || null;
-      const activityLabel   = parsed.activity || 'General Work';
-      const description     = parsed.description || `Working in ${app_} on ${pageType || 'the application'}.`;
-      const confidence      = parsed.confidence ?? 0.7;
+      const detectedApp = parsed.app || parsed.detected_app || appName || null;
+      const detectedWebsite = parsed.website || parsed.detected_website || null;
+      const activityLabel = parsed.activity || 'General Work';
+      const description = parsed.description || `Working in ${app_} on ${pageType || 'the application'}.`;
+      const confidence = parsed.confidence ?? 0.7;
 
       res.json({
-        activity:         activityLabel,
+        activity: activityLabel,
         description,
         confidence,
-        detected_app:     detectedApp,
+        detected_app: detectedApp,
         detected_website: detectedWebsite,
       });
     } catch (error: any) {
@@ -1461,18 +1586,18 @@ OUTPUT FORMAT (STRICT JSON — no markdown, no extra text):
     const ticket = ticketNumber ? ` on ${ticketNumber}` : '';
 
     const map: Record<string, [string, string]> = {
-      'Ticket Detail':   ['Ticket Work',        `Reviewing ticket details${ticket} in ${app_}'s Ticket Detail page.`],
-      'Ticket List':     ['Ticket Work',        `Browsing the ticket list in ${app_}, reviewing open incidents.`],
-      'Timesheet':       ['Timesheet Entry',    `Updating timesheet records in ${app_}'s Timesheet module.`],
-      'Weekly Timesheet':['Timesheet Entry',    `Logging work hours in ${app_}'s Weekly Timesheet view.`],
-      'Dashboard':       ['Dashboard Review',   `Reviewing the incident dashboard in ${app_}.`],
-      'Reports':         ['Reports Analysis',   `Analyzing reports and metrics in ${app_}'s Reports section.`],
-      'Knowledge Base':  ['Knowledge Base',     `Browsing knowledge base articles in ${app_}.`],
-      'Calendar':        ['Calendar Review',    `Reviewing scheduled events in ${app_}'s Calendar.`],
-      'Settings':        ['Settings Configuration', `Configuring system settings in ${app_}.`],
-      'CMDB':            ['General Work',       `Managing configuration items in ${app_}'s CMDB.`],
-      'Problem Management': ['General Work',    `Working on problem management tasks in ${app_}.`],
-      'Change Management':  ['General Work',    `Reviewing change requests in ${app_}.`],
+      'Ticket Detail': ['Ticket Work', `Reviewing ticket details${ticket} in ${app_}'s Ticket Detail page.`],
+      'Ticket List': ['Ticket Work', `Browsing the ticket list in ${app_}, reviewing open incidents.`],
+      'Timesheet': ['Timesheet Entry', `Updating timesheet records in ${app_}'s Timesheet module.`],
+      'Weekly Timesheet': ['Timesheet Entry', `Logging work hours in ${app_}'s Weekly Timesheet view.`],
+      'Dashboard': ['Dashboard Review', `Reviewing the incident dashboard in ${app_}.`],
+      'Reports': ['Reports Analysis', `Analyzing reports and metrics in ${app_}'s Reports section.`],
+      'Knowledge Base': ['Knowledge Base', `Browsing knowledge base articles in ${app_}.`],
+      'Calendar': ['Calendar Review', `Reviewing scheduled events in ${app_}'s Calendar.`],
+      'Settings': ['Settings Configuration', `Configuring system settings in ${app_}.`],
+      'CMDB': ['General Work', `Managing configuration items in ${app_}'s CMDB.`],
+      'Problem Management': ['General Work', `Working on problem management tasks in ${app_}.`],
+      'Change Management': ['General Work', `Reviewing change requests in ${app_}.`],
     };
 
     for (const [k, [act, desc]] of Object.entries(map)) {
@@ -1590,14 +1715,14 @@ Respond ONLY with JSON: {"summary": "your summary here"}`;
   app.post('/api/activity-entries', async (req: any, res: any) => {
     try {
       const { session_id, user_id, screenshot_url, screenshot_filename, screenshot_format,
-              screenshot_size_kb, activity_label, description, confidence, captured_at } = req.body;
+        screenshot_size_kb, activity_label, description, confidence, captured_at } = req.body;
       if (!user_id) return res.status(400).json({ error: 'Missing user_id' });
       const result = await execute(
         `INSERT INTO activity_entries (session_id, user_id, screenshot_url, screenshot_filename, screenshot_format, screenshot_size_kb, activity_label, description, confidence, captured_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [session_id || null, user_id, screenshot_url || null, screenshot_filename || null,
-         screenshot_format || null, screenshot_size_kb || null, activity_label || null,
-         description || null, confidence || 0, captured_at || null]
+        screenshot_format || null, screenshot_size_kb || null, activity_label || null,
+        description || null, confidence || 0, captured_at || null]
       );
       const created = await query('SELECT * FROM activity_entries WHERE id = ?', [result.insertId]);
       res.json({ id: result.insertId.toString(), ...created[0] });
@@ -1661,7 +1786,7 @@ Respond ONLY with JSON: {"summary": "your summary here"}`;
       }
       // Determine format from MIME
       const format = req.file.mimetype === 'image/png' ? 'PNG' : 'JPEG';
-      const sizeKB  = Math.round(req.file.size / 1024);
+      const sizeKB = Math.round(req.file.size / 1024);
       const imageUrl = `/uploads/screenshots/${req.file.filename}`;
 
       console.log(`[Upload] Screenshot saved: ${req.file.filename} (${format}, ${sizeKB}KB)`);
@@ -1670,7 +1795,8 @@ Respond ONLY with JSON: {"summary": "your summary here"}`;
         filename: req.file.filename,
         format,
         size_kb: sizeKB,
-      });    } catch (error: any) {
+      });
+    } catch (error: any) {
       console.error('[Upload] Screenshot upload failed:', error.message);
       res.status(500).json({ error: 'Screenshot upload failed' });
     }
@@ -2047,6 +2173,21 @@ Please respond appropriately as a helpful IT assistant.`,
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`[MySQL] Database: ${dbConfig.database} at ${dbConfig.host}:${dbConfig.port}`);
+  });
+}
+
+startServer().catch(error => {
+  console.error("Failed to start server:", error);
+  process.exit(1);
+});
+console.log('[OmniChannel] Polling emails...');
+OmniChannelEngine.pollIncomingEmails();
+    });
+
+cron.schedule('*/30 * * * * *', () => {
+  console.log('[OmniChannel] Processing notification queue...');
+  OmniChannelEngine.processNotificationQueue();
+});
   });
 }
 

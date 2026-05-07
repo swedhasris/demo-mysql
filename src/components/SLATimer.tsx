@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { motion } from "motion/react";
 
 interface SLATimerProps {
   label: string;
   deadline: string;
+  startTime?: string; // Total SLA duration reference
   metAt?: string;
   isPaused?: boolean;
   onHoldStart?: string;
@@ -14,6 +16,7 @@ interface SLATimerProps {
 export function SLATimer({
   label,
   deadline,
+  startTime,
   metAt,
   isPaused = false,
   onHoldStart,
@@ -21,14 +24,23 @@ export function SLATimer({
   waitUntil,
 }: SLATimerProps) {
   const [displayTime, setDisplayTime] = useState("");
+  const [breachDuration, setBreachDuration] = useState("");
   const [status, setStatus] = useState<"waiting" | "met" | "breached" | "active" | "paused">("active");
   const [percentage, setPercentage] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    // Clear any existing interval
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     // SLA already met — freeze the display
     if (metAt) {
       setStatus("met");
       setDisplayTime("MET ✓");
+      setBreachDuration("");
       setPercentage(100);
       return;
     }
@@ -37,10 +49,13 @@ export function SLATimer({
     if (waitUntil !== undefined && (waitUntil === null || waitUntil === "")) {
       setStatus("waiting");
       setDisplayTime("—");
+      setBreachDuration("");
       return;
     }
 
     const deadlineMs = new Date(deadline).getTime();
+    const startMs = startTime ? new Date(startTime).getTime() : (deadlineMs - 24 * 3_600_000); // Default to 24h if no start time
+    
     if (isNaN(deadlineMs)) {
       setDisplayTime("--:--:--");
       return;
@@ -53,81 +68,125 @@ export function SLATimer({
           ? new Date(onHoldStart).getTime()
           : now;
 
+      // Adjust for paused time
       const diff = deadlineMs - effectiveNow + (totalPausedTime || 0);
+      const totalDuration = deadlineMs - startMs;
+      
+      // Calculate percentage used: (elapsed / total) * 100
+      const elapsed = effectiveNow - startMs - (totalPausedTime || 0);
+      const calculatedPercentage = Math.min(Math.max((elapsed / totalDuration) * 100, 0), 100);
 
       if (diff <= 0) {
+        // === BREACHED: Clamp display to 00:00:00 ===
         setStatus("breached");
-        const over = Math.abs(diff);
-        const h = Math.floor(over / 3_600_000);
-        const m = Math.floor((over % 3_600_000) / 60_000);
-        const s = Math.floor((over % 60_000) / 1_000);
-        setDisplayTime(
-          `-${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
-        );
+        setDisplayTime("00:00:00");
         setPercentage(100);
+
+        // Calculate how long ago the breach occurred (for context only)
+        const overdue = Math.abs(diff);
+        if (overdue >= 3_600_000) {
+          const h = Math.floor(overdue / 3_600_000);
+          const m = Math.floor((overdue % 3_600_000) / 60_000);
+          setBreachDuration(`${h}h ${m}m overdue`);
+        } else if (overdue >= 60_000) {
+          const m = Math.floor(overdue / 60_000);
+          setBreachDuration(`${m}m overdue`);
+        } else {
+          setBreachDuration("just breached");
+        }
+
+        // Stop the interval — no need to keep ticking once breached
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
       } else {
         setStatus(isPaused ? "paused" : "active");
+        setBreachDuration("");
         const h = Math.floor(diff / 3_600_000);
         const m = Math.floor((diff % 3_600_000) / 60_000);
         const s = Math.floor((diff % 60_000) / 1_000);
         setDisplayTime(
           `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
         );
-        // rough % used — not perfect without startTime, but good enough for UI
-        const rough = Math.min(Math.max(((24 * 3_600_000 - diff) / (24 * 3_600_000)) * 100, 0), 99);
-        setPercentage(rough);
+        setPercentage(calculatedPercentage);
       }
     };
 
     tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [deadline, metAt, isPaused, onHoldStart, totalPausedTime, waitUntil]);
+    timerRef.current = setInterval(tick, 1000);
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [deadline, startTime, metAt, isPaused, onHoldStart, totalPausedTime, waitUntil]);
 
-  const barColor =
-    status === "met"
-      ? "bg-green-500"
-      : status === "breached"
-      ? "bg-red-500"
-      : status === "paused"
-      ? "bg-orange-400"
-      : "bg-sn-green";
+  // Color Escalation Logic
+  const getEscalationColor = () => {
+    if (status === "met") return "bg-emerald-500";
+    if (status === "breached") return "bg-red-600";
+    if (status === "paused") return "bg-amber-400";
+    
+    if (percentage >= 75) return "bg-red-500";
+    if (percentage >= 50) return "bg-yellow-500";
+    return "bg-sn-green"; // Healthy (< 50%)
+  };
 
-  const textColor =
-    status === "met"
-      ? "text-green-600"
-      : status === "breached"
-      ? "text-red-600"
-      : status === "paused"
-      ? "text-orange-500"
-      : status === "waiting"
-      ? "text-gray-400"
-      : "text-blue-600";
+  const getEscalationTextColor = () => {
+    if (status === "met") return "text-emerald-600";
+    if (status === "breached") return "text-red-600";
+    if (status === "paused") return "text-amber-600";
+    if (status === "waiting") return "text-gray-400";
+    
+    if (percentage >= 75) return "text-red-600";
+    if (percentage >= 50) return "text-yellow-600";
+    return "text-blue-600"; // Default
+  };
 
   return (
-    <div className="flex flex-col gap-0.5 min-w-[90px]">
+    <div className="flex flex-col gap-0.5 min-w-[110px] group">
       <div className="flex items-center justify-between gap-1">
-        <span className="text-[9px] uppercase text-muted-foreground font-bold leading-none">
+        <span className="text-[9px] uppercase text-muted-foreground font-black leading-none tracking-wider">
           {label}
         </span>
-        {status === "paused" && (
-          <span className="text-[8px] font-black text-orange-500 uppercase animate-pulse">
+        {status === "paused" ? (
+          <span className="text-[8px] font-black text-amber-600 uppercase animate-pulse">
             PAUSED
           </span>
-        )}
+        ) : status === "breached" ? (
+          <span className="text-[8px] font-black text-red-600 uppercase animate-pulse">
+            BREACHED
+          </span>
+        ) : null}
       </div>
-      <span
-        className={cn(
-          "text-[13px] font-mono font-bold leading-tight tracking-tight",
-          textColor
-        )}
-      >
-        {displayTime}
-      </span>
-      {/* Progress bar */}
-      <div className="w-full h-1 bg-muted rounded-full overflow-hidden mt-0.5">
-        <div
-          className={cn("h-full transition-all duration-500", barColor)}
+      
+      <div className="flex items-baseline gap-1.5">
+        <span
+          className={cn(
+            "text-[13px] font-mono font-black leading-tight tracking-tight",
+            getEscalationTextColor()
+          )}
+        >
+          {displayTime}
+        </span>
+        {status === "breached" && breachDuration ? (
+          <span className="text-[8px] font-bold text-red-500/70 italic">
+            {breachDuration}
+          </span>
+        ) : status !== "met" && status !== "waiting" ? (
+          <span className="text-[9px] font-bold text-muted-foreground/60">
+            {Math.round(percentage)}%
+          </span>
+        ) : null}
+      </div>
+
+      {/* Progress bar with Escalation Colors */}
+      <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden mt-0.5 shadow-inner">
+        <motion.div
+          layout
+          className={cn("h-full transition-all duration-1000", getEscalationColor())}
           style={{ width: `${percentage}%` }}
         />
       </div>

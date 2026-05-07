@@ -3,19 +3,19 @@ import { addDoc, collection, deleteDoc, doc, onSnapshot, orderBy, query, serverT
 import { db } from "../lib/firebase";
 import { useAuth } from "../contexts/AuthContext";
 import { ROLE_HIERARCHY, Role } from "../lib/roles";
-import { 
-  ShieldAlert, Zap, Plus, Trash2, Settings2, Layers, List, Tag, Users, 
+import {
+  ShieldAlert, Zap, Plus, Trash2, Settings2, Layers, List, Tag, Users,
   ChevronRight, Layout, Bell, Shield, Activity, Database, Search, Filter,
   ArrowRight, Info, Lock, Globe, Cpu, Radio, Sparkles, Box, HardDrive,
   Edit3, Eye, Clock, UserPlus, UserMinus, AlertCircle, CheckCircle2, History
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { 
-  CategoryItem, SubcategoryItem, ServiceProviderItem, GroupItem, GroupMemberItem, 
-  AuditLog, Status, useServiceCatalog 
+import {
+  CategoryItem, SubcategoryItem, ServiceProviderItem, GroupItem, GroupMemberItem,
+  AuditLog, Status, useServiceCatalog
 } from "../lib/serviceCatalog";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import { AreaChart, Area, ResponsiveContainer } from "recharts";
 import { format } from "date-fns";
 
@@ -33,7 +33,7 @@ export function Settings() {
   const { user, profile } = useAuth();
   const role = profile?.role || 'user';
   const { categories, subcategories, serviceProviders, groups, members } = useServiceCatalog();
-  
+
   const [activeTab, setActiveTab] = useState<"master" | "automation" | "security" | "audit">("master");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
@@ -134,10 +134,10 @@ export function Settings() {
         if (action === 'create') {
           const visibleItems: any[] =
             type === 'Category' ? activeCategories :
-            type === 'Subcategory' ? activeSubcategories :
-            type === 'Service Provider' ? activeProviders :
-            type === 'Group' ? activeGroups :
-            type === 'Group Member' ? activeMembers : [];
+              type === 'Subcategory' ? activeSubcategories :
+                type === 'Service Provider' ? activeProviders :
+                  type === 'Group' ? activeGroups :
+                    type === 'Group Member' ? activeMembers : [];
 
           const nameToCheck = (data.name || "").trim().toLowerCase();
           const userIdToCheck = data.userId;
@@ -196,13 +196,13 @@ export function Settings() {
       const groupRef = await addDoc(collection(db, "settings_groups"), { name: "Design Software Team", serviceProviderId: provRef.id, status: "active", createdAt: serverTimestamp() });
       // 5. Member
       if (allUsers.length > 0) {
-        await addDoc(collection(db, "settings_group_members"), { 
-          userId: allUsers[0].id, 
-          userName: allUsers[0].name || allUsers[0].email, 
-          groupId: groupRef.id, 
-          roleInGroup: "agent", 
-          status: "active", 
-          createdAt: serverTimestamp() 
+        await addDoc(collection(db, "settings_group_members"), {
+          userId: allUsers[0].id,
+          userName: allUsers[0].name || allUsers[0].email,
+          groupId: groupRef.id,
+          roleInGroup: "agent",
+          status: "active",
+          createdAt: serverTimestamp()
         });
       }
       setMessage({ text: "Demo data seeded successfully!", type: "success" });
@@ -216,7 +216,7 @@ export function Settings() {
 
   return (
     <div className="max-w-[1600px] mx-auto min-h-[90vh] flex flex-col gap-6 pb-20">
-      
+
       {/* ── Dynamic Header ── */}
       <div className="relative p-12 bg-sn-sidebar rounded-[40px] border border-white/5 shadow-2xl overflow-hidden group flex flex-col items-center text-center">
         <div className="absolute inset-0 bg-gradient-to-b from-sn-green/5 to-transparent pointer-events-none" />
@@ -231,10 +231,10 @@ export function Settings() {
                 <span className="text-[10px] font-black uppercase tracking-[0.4em]">Master Infrastructure</span>
               </div>
               {isAdmin && (
-                <Button 
-                  onClick={handleSeedData} 
-                  variant="outline" 
-                  size="sm" 
+                <Button
+                  onClick={handleSeedData}
+                  variant="outline"
+                  size="sm"
                   className="h-8 border-sn-green/20 text-sn-green hover:bg-sn-green/10 text-[10px] font-black uppercase tracking-widest px-4 rounded-xl"
                 >
                   <Sparkles size={12} className="mr-2" /> Seed Demo Data
@@ -244,7 +244,7 @@ export function Settings() {
             <h1 className="text-6xl font-black text-white tracking-tighter">Platform Architect</h1>
             <p className="text-text-dim font-medium text-lg mx-auto">Centralized command for global service hierarchies and RBAC.</p>
           </div>
-          
+
           <div className="flex bg-black/40 p-1.5 rounded-[22px] border border-white/5 backdrop-blur-xl inline-flex">
             {[
               { id: "master", label: "Hierarchy", icon: Layers },
@@ -279,37 +279,37 @@ export function Settings() {
             <div className="space-y-8">
               {/* Row 1: High Level Definition (3 Columns) */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[600px]">
-                <MasterColumn 
-                  title="Categories" 
-                  icon={Globe} 
-                  items={activeCategories} 
-                  selectedId={selectedCatId} 
+                <MasterColumn
+                  title="Categories"
+                  icon={Globe}
+                  items={activeCategories}
+                  selectedId={selectedCatId}
                   onSelect={(id) => { setSelectedCatId(id); setSelectedSubId(null); setSelectedSrvId(null); setSelectedGroupId(null); }}
                   onAdd={() => { setEditingItem({ type: 'Category', data: {} }); setIsModalOpen(true); }}
                   onEdit={(item) => { setEditingItem({ type: 'Category', data: item }); setIsModalOpen(true); }}
                   onDelete={(item) => handleMutation('Category', 'delete', item)}
                   isAdmin={isAdmin}
                 />
-                <MasterColumn 
-                  title="Sub-Categories" 
-                  icon={Radio} 
-                  items={activeSubcategories} 
-                  selectedId={selectedSubId} 
+                <MasterColumn
+                  title="Sub-Categories"
+                  icon={Radio}
+                  items={activeSubcategories}
+                  selectedId={selectedSubId}
                   disabled={false}
                   onSelect={(id) => { setSelectedSubId(id); setSelectedSrvId(null); setSelectedGroupId(null); }}
-                  onAdd={() => { setEditingItem({ type: 'Subcategory', data: { } }); setIsModalOpen(true); }}
+                  onAdd={() => { setEditingItem({ type: 'Subcategory', data: {} }); setIsModalOpen(true); }}
                   onEdit={(item) => { setEditingItem({ type: 'Subcategory', data: item }); setIsModalOpen(true); }}
                   onDelete={(item) => handleMutation('Subcategory', 'delete', item)}
                   isAdmin={isAdmin}
                 />
-                <MasterColumn 
-                  title="Providers" 
-                  icon={Box} 
-                  items={activeProviders} 
-                  selectedId={selectedSrvId} 
+                <MasterColumn
+                  title="Providers"
+                  icon={Box}
+                  items={activeProviders}
+                  selectedId={selectedSrvId}
                   disabled={false}
                   onSelect={(id) => { setSelectedSrvId(id); setSelectedGroupId(null); }}
-                  onAdd={() => { setEditingItem({ type: 'Service Provider', data: { } }); setIsModalOpen(true); }}
+                  onAdd={() => { setEditingItem({ type: 'Service Provider', data: {} }); setIsModalOpen(true); }}
                   onEdit={(item) => { setEditingItem({ type: 'Service Provider', data: item }); setIsModalOpen(true); }}
                   onDelete={(item) => handleMutation('Service Provider', 'delete', item)}
                   isAdmin={isAdmin}
@@ -318,26 +318,26 @@ export function Settings() {
 
               {/* Row 2: Operational Structures (2 Columns) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[600px] max-w-5xl mx-auto">
-                <MasterColumn 
-                  title="Groups" 
-                  icon={Users} 
-                  items={activeGroups} 
-                  selectedId={selectedGroupId} 
+                <MasterColumn
+                  title="Groups"
+                  icon={Users}
+                  items={activeGroups}
+                  selectedId={selectedGroupId}
                   disabled={false}
                   onSelect={(id) => setSelectedGroupId(id)}
-                  onAdd={() => { setEditingItem({ type: 'Group', data: { } }); setIsModalOpen(true); }}
+                  onAdd={() => { setEditingItem({ type: 'Group', data: {} }); setIsModalOpen(true); }}
                   onEdit={(item) => { setEditingItem({ type: 'Group', data: item }); setIsModalOpen(true); }}
                   onDelete={(item) => handleMutation('Group', 'delete', item)}
                   isAdmin={isAdmin}
                 />
-                <MasterColumn 
-                  title="Group Members" 
-                  icon={UserPlus} 
-                  items={activeMembers.map(m => ({ ...m, name: m.userName }))} 
-                  selectedId={null} 
+                <MasterColumn
+                  title="Group Members"
+                  icon={UserPlus}
+                  items={activeMembers.map(m => ({ ...m, name: m.userName }))}
+                  selectedId={null}
                   disabled={false}
-                  onSelect={() => {}}
-                  onAdd={() => { setEditingItem({ type: 'Group Member', data: { } }); setIsModalOpen(true); }}
+                  onSelect={() => { }}
+                  onAdd={() => { setEditingItem({ type: 'Group Member', data: {} }); setIsModalOpen(true); }}
                   onEdit={(item) => { setEditingItem({ type: 'Group Member', data: item }); setIsModalOpen(true); }}
                   onDelete={(item) => handleMutation('Group Member', 'delete', item)}
                   isAdmin={isAdmin}
@@ -389,15 +389,15 @@ export function Settings() {
                           <span className={cn(
                             "px-3 py-1 rounded-lg text-[9px] font-black uppercase",
                             log.action === 'create' ? "bg-green-500/10 text-green-500" :
-                            log.action === 'update' ? "bg-blue-500/10 text-blue-500" : "bg-red-500/10 text-red-500"
+                              log.action === 'update' ? "bg-blue-500/10 text-blue-500" : "bg-red-500/10 text-red-500"
                           )}>
                             {log.action}
                           </span>
                         </td>
                         <td className="px-8 py-5 text-xs font-medium text-muted-foreground">
                           {log.action === 'create' ? `Added "${log.newValue?.name || log.newValue?.userName}"` :
-                           log.action === 'update' ? `Modified property of ID ${log.moduleId.slice(0,6)}` :
-                           `Deactivated ID ${log.moduleId.slice(0,6)}`}
+                            log.action === 'update' ? `Modified property of ID ${log.moduleId.slice(0, 6)}` :
+                              `Deactivated ID ${log.moduleId.slice(0, 6)}`}
                         </td>
                       </tr>
                     ))}
@@ -417,13 +417,13 @@ export function Settings() {
                         <Zap size={20} />
                       </div>
                       <div className="flex items-center gap-2">
-                        <button 
+                        <button
                           onClick={() => { setEditingItem({ type: 'Workflow', data: wf }); setIsModalOpen(true); }}
                           className="p-2 hover:bg-muted rounded-xl transition-colors text-muted-foreground hover:text-sn-green"
                         >
                           <Edit3 size={16} />
                         </button>
-                        <button 
+                        <button
                           onClick={() => handleMutation('Workflow', 'delete', wf)}
                           className="p-2 hover:bg-red-500/10 rounded-xl transition-colors text-muted-foreground hover:text-red-500"
                         >
@@ -433,7 +433,7 @@ export function Settings() {
                     </div>
                     <h3 className="text-lg font-black mb-1">{wf.name}</h3>
                     <p className="text-xs text-muted-foreground mb-4 line-clamp-2">{wf.description || "No description provided."}</p>
-                    
+
                     <div className="space-y-3">
                       <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-muted-foreground">
                         <span>Trigger</span>
@@ -461,8 +461,8 @@ export function Settings() {
                     </div>
                   </div>
                 ))}
-                
-                <button 
+
+                <button
                   onClick={() => { setEditingItem({ type: 'Workflow', data: {} }); setIsModalOpen(true); }}
                   className="bg-dashed border-2 border-dashed border-border dark:border-white/10 rounded-[32px] p-6 flex flex-col items-center justify-center gap-4 hover:border-sn-green/50 hover:bg-sn-green/5 transition-all text-muted-foreground hover:text-sn-green min-h-[250px]"
                 >
@@ -501,7 +501,7 @@ export function Settings() {
       {/* ── Notification Toast ── */}
       <AnimatePresence>
         {message && (
-          <motion.div 
+          <motion.div
             initial={{ y: 100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 100, opacity: 0 }}
@@ -519,7 +519,7 @@ export function Settings() {
       {/* ── Advanced Form Modal ── */}
       {isModalOpen && editingItem && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-sn-dark/80 backdrop-blur-md">
-          <motion.div 
+          <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             className="w-full max-w-lg bg-white dark:bg-sn-sidebar rounded-[40px] border border-border dark:border-white/10 shadow-2xl overflow-hidden"
@@ -528,13 +528,13 @@ export function Settings() {
               <h3 className="text-2xl font-black">{editingItem.data.id ? 'Edit' : 'Create'} {editingItem.type}</h3>
               <p className="text-muted-foreground text-sm font-medium mt-1">Configure global master data parameters.</p>
             </div>
-            
+
             <form onSubmit={(e) => {
               e.preventDefault();
               const formData = new FormData(e.currentTarget);
               const data: any = {};
               formData.forEach((val, key) => data[key] = val);
-              
+
               if (editingItem.type === 'Group Member') {
                 const user = allUsers.find(u => u.id === data.userId);
                 data.userName = user?.name || user?.email || "Unknown";
@@ -547,7 +547,7 @@ export function Settings() {
                 handleMutation(editingItem.type, 'create', { ...editingItem.data, ...data });
               }
             }} className="p-8 space-y-6">
-              
+
               {editingItem.type === 'Category' && (
                 <>
                   <Input label="Category Name" name="name" defaultValue={editingItem.data.name} required />
@@ -626,9 +626,9 @@ export function Settings() {
 
 function MasterColumn({ title, icon: Icon, items, selectedId, onSelect, onAdd, onEdit, onDelete, disabled, isAdmin }: any) {
   const [searchTerm, setSearchTerm] = useState("");
-  
+
   const filteredItems = useMemo(() => {
-    return items.filter((item: any) => 
+    return items.filter((item: any) =>
       (item.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
       (item.userName || "").toLowerCase().includes(searchTerm.toLowerCase())
     );
@@ -648,7 +648,7 @@ function MasterColumn({ title, icon: Icon, items, selectedId, onSelect, onAdd, o
         </div>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={12} />
-          <input 
+          <input
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
             placeholder={`Filter ${title.toLowerCase()}...`}
@@ -656,7 +656,7 @@ function MasterColumn({ title, icon: Icon, items, selectedId, onSelect, onAdd, o
           />
         </div>
       </div>
-      
+
       <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
         {filteredItems.map((item: any) => (
           <motion.div
@@ -664,12 +664,12 @@ function MasterColumn({ title, icon: Icon, items, selectedId, onSelect, onAdd, o
             key={item.id}
             className={cn(
               "w-full flex items-center justify-between p-4 rounded-2xl group transition-all duration-500 border relative overflow-hidden",
-              selectedId === item.id 
-                ? "bg-sn-green/10 border-sn-green/30 shadow-inner" 
+              selectedId === item.id
+                ? "bg-sn-green/10 border-sn-green/30 shadow-inner"
                 : "hover:bg-muted/50 border-transparent"
             )}
           >
-            <button 
+            <button
               onClick={() => onSelect(item.id)}
               className="flex-1 text-left"
             >
@@ -679,7 +679,7 @@ function MasterColumn({ title, icon: Icon, items, selectedId, onSelect, onAdd, o
               {item.providerName && <div className="text-[9px] font-bold text-muted-foreground uppercase">{item.providerName}</div>}
               {item.sla && <div className="text-[9px] font-black text-sn-green uppercase">{item.sla} SLA</div>}
             </button>
-            
+
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
               {isAdmin && (
                 <>
